@@ -28,6 +28,7 @@ import asyncio
 import logging
 
 import aiohttp
+import yarl
 
 from .state import AutoShardedConnectionState
 from .client import Client
@@ -184,6 +185,7 @@ class Shard:
             coro = DiscordWebSocket.from_client(
                 self._client,
                 resume=exc.resume,
+                gateway=None if not exc.resume else self.ws.gateway,
                 shard_id=self.id,
                 session=self.ws.session_id,
                 sequence=self.ws.sequence,
@@ -397,7 +399,7 @@ class AutoShardedClient(Client):
         """Mapping[int, :class:`ShardInfo`]: Returns a mapping of shard IDs to their respective info object."""
         return {shard_id: ShardInfo(parent, self.shard_count) for shard_id, parent in self.__shards.items()}
 
-    async def launch_shard(self, gateway: str, shard_id: int, *, initial: bool = False) -> None:
+    async def launch_shard(self, gateway: yarl.URL, shard_id: int, *, initial: bool = False) -> None:
         try:
             coro = DiscordWebSocket.from_client(self, initial=initial, gateway=gateway, shard_id=shard_id)
             ws = await asyncio.wait_for(coro, timeout=180.0)
@@ -411,10 +413,15 @@ class AutoShardedClient(Client):
         ret.launch()
 
     async def launch_shards(self) -> None:
+        if self.is_closed():
+            return
+        
         if self.shard_count is None:
-            self.shard_count, gateway = await self.http.get_bot_gateway()
+            self.shard_count: int
+            self.shard_count, gateway_url = await self.http.get_bot_gateway()
+            gateway = yarl.URL(gateway_url)
         else:
-            gateway = await self.http.get_gateway()
+            gateway = DiscordWebSocket.DEFAULT_GATEWAY
 
         self._connection.shard_count = self.shard_count
 
