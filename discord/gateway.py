@@ -37,6 +37,7 @@ import zlib
 from typing import Any, Callable, Coroutine, Deque, Dict, List, TYPE_CHECKING, NamedTuple, Optional, TypeVar, Type
 
 import aiohttp
+import yarl
 
 from . import utils
 from .activity import BaseActivity
@@ -288,10 +289,11 @@ class DiscordWebSocket:
         _initial_identify: bool
         shard_id: Optional[int]
         shard_count: Optional[int]
-        gateway: str
+        gateway: yarl.URL
         _max_heartbeat_timeout: float
 
     # fmt: off
+    DEFAULT_GATEWAY    = yarl.URL('wss://gateway.discord.gg/')
     DISPATCH           = 0
     HEARTBEAT          = 1
     IDENTIFY           = 2
@@ -346,18 +348,28 @@ class DiscordWebSocket:
         client: Client,
         *,
         initial: bool = False,
-        gateway: Optional[str] = None,
+        gateway: Optional[yarl.URL] = None,
         shard_id: Optional[int] = None,
         session: Optional[str] = None,
         sequence: Optional[int] = None,
         resume: bool = False,
+        encoding: str = 'json',
+        zlib: bool = True,
     ) -> DWS:
         """Creates a main websocket for Discord from a :class:`Client`.
 
         This is for internal use only.
         """
-        gateway = gateway or await client.http.get_gateway()
-        socket = await client.http.ws_connect(gateway)
+        from .http import INTERNAL_API_VERSION
+        gateway = gateway or cls.DEFAULT_GATEWAY
+
+        if zlib:
+            url = gateway.with_query(v=INTERNAL_API_VERSION, encoding=encoding, compress='zlib-stream')
+        else:
+            url = gateway.with_query(v=INTERNAL_API_VERSION, encoding=encoding)
+
+        socket = await client.http.ws_connect(str(url))
+        
         ws = cls(socket, loop=client.loop)
 
         # dynamically add attributes needed
@@ -537,6 +549,7 @@ class DiscordWebSocket:
 
                 self.sequence = None
                 self.session_id = None
+                self.gateway = self.DEFAULT_GATEWAY
                 _log.info('Shard ID %s session has been invalidated.', self.shard_id)
                 await self.close(code=1000)
                 raise ReconnectWebSocket(self.shard_id, resume=False)
@@ -548,6 +561,7 @@ class DiscordWebSocket:
             self._trace = trace = data.get('_trace', [])
             self.sequence = msg['s']
             self.session_id = data['session_id']
+            self.gateway = yarl.URL(data['resume_gateway_url'])
             # pass back shard ID to ready handler
             data['__shard_id__'] = self.shard_id
             _log.info(
